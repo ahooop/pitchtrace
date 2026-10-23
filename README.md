@@ -1,5 +1,8 @@
 # 音迹 · PitchTrace
 
+[![Android CI](https://github.com/ahooop/pitchtrace/actions/workflows/android.yml/badge.svg)](https://github.com/ahooop/pitchtrace/actions/workflows/android.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-E3A94E.svg)](LICENSE)
+
 用手机麦克风实时检测音高，把声音画成钢琴卷帘上的“音迹”——横轴是时间，纵轴是音高，
 当前时刻固定在偏右的竖线上，轨迹向左滚动，同时支持录下这一段声音并回放。
 
@@ -91,3 +94,9 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 - 频谱瀑布图
 - 音准打分、音域统计（唱到的最低/最高音）
 - 使用 `Oboe` 或 `AudioRecord` 的 `AAudio` 低延迟路径
+
+## 许可证
+
+[MIT](LICENSE) © 2026 ahooop
+
+欢迎提 issue / PR。真机适配（不同厂商的麦克风与 UNPROCESSED 音源支持）是最需要反馈的部分。
