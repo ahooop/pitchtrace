@@ -1,5 +1,7 @@
 # 音迹 · PitchTrace
 
+简体中文 | [English](#english)
+
 [![Android CI](https://github.com/ahooop/pitchtrace/actions/workflows/android.yml/badge.svg)](https://github.com/ahooop/pitchtrace/actions/workflows/android.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-E3A94E.svg)](LICENSE)
 
@@ -7,6 +9,23 @@
 当前时刻固定在偏右的竖线上，轨迹向左滚动，同时支持录下这一段声音并回放。
 
 > 灵感来自 Android 上的“知唱音域调音仪”那类实时音高显示工具，这里是完全独立实现的版本。
+
+<a id="english"></a>
+
+## English
+
+**PitchTrace** ("sound trace") draws what it hears: the phone microphone drives real-time pitch detection, plotted on a piano roll — time on the X axis, pitch on the Y axis, the current moment pinned to a line at the right while the trace rolls left. A take can be recorded and played back against the same pitch trace.
+
+- **Detection** — YIN (difference function → cumulative mean normalization → threshold dip → parabolic interpolation) in pure Kotlin, no NDK. 48 kHz capture decimated 2× to 24 kHz; ~10 ms per frame, ~50 ms latency including the analysis window
+- **Anti-glitch** — confidence + RMS double gate (silence draws nothing), octave-error folding, 3-point median smoothing
+- **Piano roll** — a single Canvas; the trace is one `Path` stroked twice (glow + line), with a semitone grid, second markers and note names on both edges
+- **Ranges and tuning** — E1–C4 / C2–C6 / G3–C7 / C1–C7; A4 415–466 Hz (440 by default, 442 for orchestras)
+- **Recording** — WAV plus a binary pitch track (`take.pitch`: timestamp, pitch, confidence); playback restores the trace on the same time axis, no re-analysis
+- **Testing** — `core/dsp` and `core/pitch` carry no Android dependencies, so the pitch logic is unit-tested on the JVM; UI regressions are caught by Robolectric screenshot tests that render the real Compose screen in CI
+
+Install the signed APK from [Releases](https://github.com/ahooop/pitchtrace/releases) (Android 8.0+). Build with JDK 17 and Android SDK 35: `./gradlew assembleDebug`. MIT.
+
+Known limits: phone microphone response rolls off below C2, so octave errors can still slip through there (folded, but not eliminated); only the latest take is kept.
 
 ## 界面
 
