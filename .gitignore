@@ -9,3 +9,8 @@ captures/
 .cxx/
 build-log.txt
 
+keystore.properties
+keystore/
+*.jks
+*.keystore
+

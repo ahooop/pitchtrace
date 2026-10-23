@@ -59,6 +59,11 @@ app/src/main/java/com/pitchtrace/app/
 
 `core/dsp` 与 `core/pitch` 不依赖 Android，所以音准逻辑可以在 JVM 上直接单测。
 
+## 下载
+
+- **[最新 Release](https://github.com/ahooop/pitchtrace/releases/latest)**：`pitchtrace-x.y.z.apk`，RSA 签名，直接在手机上安装（Android 8.0+，需允许未知来源）
+- 不想装也可以先看上面两张界面截图
+
 ## 构建
 
 需要 JDK 17、Android SDK（platform 35、build-tools 35）、Gradle 8.9（仓库自带 wrapper）。
@@ -76,10 +81,22 @@ app/src/main/java/com/pitchtrace/app/
 ## 安装
 
 ```bash
-adb install -r app/build/outputs/apk/debug/app-debug.apk
+adb install -r app/build/outputs/apk/release/app-release.apk    # 正式签名
+adb install -r app/build/outputs/apk/debug/app-debug.apk        # debug，包名带 .debug 可与正式版共存
 ```
 
-或者把 APK 拷到手机上手动安装（debug 包带 `.debug` 后缀，可以和其它版本共存）。
+或者把 APK 拷到手机上手动安装。
+
+自己打 release 包需要 `keystore.properties`（不入库）：
+
+```properties
+storeFile=keystore/pitchtrace-release.jks
+storePassword=******
+keyAlias=pitchtrace
+keyPassword=******
+```
+
+没有这个文件时 `assembleRelease` 产出未签名 APK，`assembleDebug` 不受影响。
 
 ## 参数与限制
 
