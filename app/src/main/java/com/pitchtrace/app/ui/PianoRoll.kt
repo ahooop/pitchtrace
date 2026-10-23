@@ -42,6 +42,7 @@ fun PianoRoll(
     windowMs: Long,
     currentMidi: Float?,
     modifier: Modifier = Modifier,
+    currentCents: Int? = null,
     nowFraction: Float = 0.58f,
 ) {
     val textMeasurer = rememberTextMeasurer(cacheSize = 64)
@@ -75,11 +76,11 @@ fun PianoRoll(
         fun yOf(midi: Float): Float = (range.maxMidi - midi) * semitone
         fun xOf(time: Long): Float = nowX - (clockMs - time) * pxPerMs
 
-        // 黑键行底色，让半音结构一眼可辨
+        // 黑键行底色，让半音结构一眼可辨（保持很轻，避免变成斑马纹）
         for (m in range.minMidi until range.maxMidi) {
             if (Music.isBlackKey(m + 1)) {
                 drawRect(
-                    color = Color(0x14FFFFFF),
+                    color = Color(0x0BFFFFFF),
                     topLeft = Offset(left, yOf((m + 1).toFloat())),
                     size = Size(right - left, semitone),
                 )
@@ -139,12 +140,12 @@ fun PianoRoll(
             drawPath(
                 path = path,
                 color = Ink.TraceGlow,
-                style = Stroke(width = 8.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round),
+                style = Stroke(width = 7.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round),
             )
             drawPath(
                 path = path,
                 color = Ink.Trace,
-                style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round),
+                style = Stroke(width = 1.7.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round),
             )
         }
 
@@ -164,7 +165,15 @@ fun PianoRoll(
             drawNoteBadge(
                 measurer = textMeasurer,
                 style = noteStyle,
-                text = Music.noteName(currentMidi),
+                text = buildString {
+                    append(Music.noteName(currentMidi))
+                    if (currentCents != null) {
+                        append(' ')
+                        if (currentCents > 0) append('+')
+                        append(currentCents)
+                        append("¢")
+                    }
+                },
                 anchorX = nowX + 14.dp.toPx(),
                 anchorY = y,
                 rightLimit = right,

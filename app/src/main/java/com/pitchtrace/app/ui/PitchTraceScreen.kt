@@ -55,6 +55,7 @@ import com.pitchtrace.app.UiState
 import com.pitchtrace.app.core.pitch.Music
 import com.pitchtrace.app.core.pitch.PitchRange
 import com.pitchtrace.app.ui.theme.Ink
+import com.pitchtrace.app.ui.theme.LocalMotionEnabled
 import com.pitchtrace.app.ui.theme.MonoNumbers
 import java.util.Locale
 
@@ -100,6 +101,7 @@ fun PitchTraceScreen(
                     clockMs = state.clockMs,
                     windowMs = state.windowMs,
                     currentMidi = state.currentMidi,
+                    currentCents = if (state.mode == Mode.LIVE) state.cents else null,
                     modifier = Modifier.fillMaxSize(),
                 )
 
@@ -108,7 +110,11 @@ fun PitchTraceScreen(
                         text = if (state.mode == Mode.LIVE) "正在聆听…" else "按下麦克风，唱一个音",
                         color = Ink.TextDim,
                         fontSize = 12.sp,
-                        modifier = Modifier.align(Alignment.Center),
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(Ink.Surface.copy(alpha = 0.85f))
+                            .padding(horizontal = 14.dp, vertical = 8.dp),
                     )
                 }
 
@@ -116,8 +122,8 @@ fun PitchTraceScreen(
                     LiveBadge(
                         elapsedMs = state.elapsedMs,
                         modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .padding(top = 10.dp, end = 52.dp),
+                            .align(Alignment.TopStart)
+                            .padding(top = 10.dp, start = 56.dp),
                     )
                 }
 
@@ -266,7 +272,11 @@ private fun ErrorBanner(message: String, onDismiss: () -> Unit, modifier: Modifi
 private fun TransportBar(state: UiState, onPlayClick: () -> Unit) {
     val positionMs = if (state.mode == Mode.LIVE) state.elapsedMs else state.playMs
     val totalMs = if (state.mode == Mode.LIVE) state.elapsedMs else state.takeMs
-    val progress = if (totalMs > 0) (positionMs.toFloat() / totalMs).coerceIn(0f, 1f) else 0f
+    val progress = when {
+        state.mode == Mode.LIVE -> 0f
+        totalMs > 0 -> (positionMs.toFloat() / totalMs).coerceIn(0f, 1f)
+        else -> 0f
+    }
 
     Column(Modifier.fillMaxWidth()) {
         Row(
@@ -289,7 +299,7 @@ private fun TransportBar(state: UiState, onPlayClick: () -> Unit) {
             )
             Spacer(Modifier.weight(1f))
             Text(
-                text = if (state.sampleRate > 0) "${state.sampleRate / 1000} kHz" else "idle",
+                text = if (state.sampleRate > 0) "${state.sampleRate / 1000} kHz" else "—",
                 color = Ink.TextDim.copy(alpha = 0.6f),
                 fontSize = 10.sp,
             )
@@ -383,21 +393,9 @@ private fun IconAction(icon: Int, description: String, enabled: Boolean, onClick
 
 @Composable
 private fun MicButton(listening: Boolean, onClick: () -> Unit) {
-    val transition = rememberInfiniteTransition(label = "mic-pulse")
-    val pulse by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween(1600, easing = LinearEasing), RepeatMode.Restart),
-        label = "mic-pulse-value",
-    )
-
     Box(modifier = Modifier.size(88.dp), contentAlignment = Alignment.Center) {
-        if (listening) {
-            Canvas(Modifier.fillMaxSize()) {
-                val radius = size.minDimension / 2f * (0.52f + 0.46f * pulse)
-                drawCircle(color = Ink.Accent.copy(alpha = 0.20f * (1f - pulse)), radius = radius)
-            }
-        }
+        // 只有采集中才需要呼吸圈：空闲时不起动画，省电也避免无谓的帧
+        if (listening) MicPulseRing()
         Box(
             modifier = Modifier
                 .size(72.dp)
@@ -414,6 +412,22 @@ private fun MicButton(listening: Boolean, onClick: () -> Unit) {
                 modifier = Modifier.size(30.dp),
             )
         }
+    }
+}
+
+@Composable
+private fun MicPulseRing() {
+    if (!LocalMotionEnabled.current) return
+    val transition = rememberInfiniteTransition(label = "mic-pulse")
+    val pulse by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(1600, easing = LinearEasing), RepeatMode.Restart),
+        label = "mic-pulse-value",
+    )
+    Canvas(Modifier.size(88.dp)) {
+        val radius = size.minDimension / 2f * (0.52f + 0.46f * pulse)
+        drawCircle(color = Ink.Accent.copy(alpha = 0.20f * (1f - pulse)), radius = radius)
     }
 }
 

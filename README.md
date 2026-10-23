@@ -5,6 +5,15 @@
 
 > 灵感来自 Android 上的“知唱音域调音仪”那类实时音高显示工具，这里是完全独立实现的版本。
 
+## 界面
+
+| 采集中 | 待机 |
+| --- | --- |
+| ![采集中](docs/screenshots/live.png) | ![待机](docs/screenshots/idle.png) |
+
+截图由 `ScreenScreenshotTest` 用 Robolectric 原生图形模式把真实 Compose 界面渲染出来，
+不是设计稿；重新生成：`./gradlew :app:testDebugUnitTest`，产物在 `app/build/screenshots/`。
+
 ## 功能
 
 - **实时音高**：YIN 基频检测，约 10ms 输出一次，延迟 ≈ 50ms（含分析窗）
@@ -53,8 +62,11 @@ app/src/main/java/com/pitchtrace/app/
 
 ```bash
 ./gradlew assembleDebug          # 产物 app/build/outputs/apk/debug/app-debug.apk
-./gradlew testDebugUnitTest      # DSP / 音准单测
+./gradlew testDebugUnitTest      # DSP / 音准单测 + 界面截图
 ```
+
+单元测试覆盖：440Hz / C2 / C6 的音分误差、静音与白噪声不误报、八度误判折叠、单帧跳点平滑、
+采集率 48k→分析率 24k 的端到端流程。
 
 `local.properties` 里的 `sdk.dir` 指向本机 Android SDK，不要提交。
 
