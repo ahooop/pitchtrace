@@ -1,0 +1,411 @@
+package com.pitchtrace.app
+
+import android.app.Application
+import android.os.SystemClock
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import com.pitchtrace.app.core.audio.AudioCapture
+import com.pitchtrace.app.core.audio.PlaybackEngine
+import com.pitchtrace.app.core.audio.WavData
+import com.pitchtrace.app.core.audio.WavReader
+import com.pitchtrace.app.core.audio.WavWriter
+import com.pitchtrace.app.core.dsp.PitchAnalyzer
+import com.pitchtrace.app.core.pitch.Music
+import com.pitchtrace.app.core.pitch.PitchRange
+import com.pitchtrace.app.core.pitch.PitchSample
+import com.pitchtrace.app.core.pitch.PitchTracker
+import com.pitchtrace.app.core.store.SessionStore
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import kotlin.math.max
+
+enum class Mode { IDLE, LIVE, PLAYBACK }
+
+data class UiState(
+    val mode: Mode = Mode.IDLE,
+    val samples: List<PitchSample> = emptyList(),
+    val clockMs: Long = 0L,
+    val currentMidi: Float? = null,
+    val currentNote: String = "",
+    val cents: Int = 0,
+    val elapsedMs: Long = 0L,
+    val takeMs: Long = 0L,
+    val hasTake: Boolean = false,
+    val playMs: Long = 0L,
+    val a4: Float = 440f,
+    val range: PitchRange = PitchRange.VOICE,
+    val sampleRate: Int = 0,
+    val windowMs: Long = 4500L,
+    val error: String? = null,
+)
+
+/**
+ * 唯一的编排层：
+ * 音频线程 → PitchAnalyzer → PitchTracker → Channel → 收集协程 → StateFlow。
+ *
+ * 关键点是“音频线程绝不做 UI 相关的事”，以及“状态以 30Hz 合并下发”，
+ * 否则 93Hz 的检测结果会直接把 Compose 的重组打爆。
+ */
+class PitchViewModel(application: Application) : AndroidViewModel(application) {
+
+    private val store = SessionStore(application)
+
+    private val _ui = MutableStateFlow(UiState())
+    val ui: StateFlow<UiState> = _ui.asStateFlow()
+
+    private var capture: AudioCapture? = null
+
+    @Volatile
+    private var analyzer: PitchAnalyzer? = null
+
+    @Volatile
+    private var writer: WavWriter? = null
+
+    @Volatile
+    private var tracker = PitchTracker()
+
+    private val playback = PlaybackEngine()
+
+    private val lock = Any()
+    private val live = ArrayList<PitchSample>(8192)
+    private var lastSampleTime = 0L
+    private var startTime = 0L
+
+    private var takeSamples: List<PitchSample> = emptyList()
+    private var takeMs = 0L
+    private var hasTake = false
+    private var playMs = 0L
+
+    private var lastEmit = 0L
+    private var collector: Job? = null
+    private val frames = Channel<PitchSample>(capacity = 256)
+
+    init {
+        restoreLastTake()
+        startCollector()
+    }
+
+    // ---------------------------------------------------------------- 采集
+
+    fun startListening() {
+        if (capture != null) return
+        playback.stop()
+        playMs = 0
+
+        val newCapture = AudioCapture(
+            onFrame = { buffer, count -> handleFrame(buffer, count) },
+            onError = { message ->
+                viewModelScope.launch(Dispatchers.Main) {
+                    _ui.update { it.copy(error = message, mode = Mode.IDLE) }
+                }
+            },
+        )
+        if (!newCapture.start()) {
+            newCapture.stop()
+            return
+        }
+
+        val range = _ui.value.range
+        val a4 = _ui.value.a4
+        val rate = newCapture.sampleRate
+        val newAnalyzer = PitchAnalyzer(rate, range.minFrequency(a4), range.maxFrequency(a4))
+
+        capture = newCapture
+        analyzer = newAnalyzer
+        tracker = PitchTracker(a4)
+        synchronized(lock) {
+            live.clear()
+            lastSampleTime = 0L
+        }
+        startTime = SystemClock.uptimeMillis()
+        writer = runCatching { WavWriter(store.wavFile, rate) }.getOrNull()
+        takeSamples = emptyList()
+        takeMs = 0
+        hasTake = false
+        playMs = 0
+
+        _ui.update {
+            it.copy(
+                mode = Mode.LIVE,
+                samples = emptyList(),
+                clockMs = 0,
+                currentMidi = null,
+                currentNote = "",
+                cents = 0,
+                elapsedMs = 0,
+                takeMs = 0,
+                hasTake = false,
+                playMs = 0,
+                sampleRate = rate,
+            )
+        }
+    }
+
+    fun stopListening() {
+        val active = capture ?: return
+        capture = null
+        active.stop()
+
+        writer?.let { runCatching { it.close() } }
+        writer = null
+        analyzer = null
+
+        val snapshot: List<PitchSample>
+        val last: Long
+        synchronized(lock) {
+            snapshot = live.toList()
+            last = lastSampleTime
+        }
+
+        if (snapshot.size >= 4 && last > startTime + 150) {
+            takeMs = last - startTime
+            takeSamples = snapshot.map { it.copy(timeMs = max(0L, it.timeMs - startTime)) }
+            hasTake = true
+            viewModelScope.launch(Dispatchers.IO) { store.saveTrack(takeSamples) }
+        } else {
+            takeSamples = emptyList()
+            takeMs = 0
+            hasTake = false
+        }
+        playMs = takeMs
+
+        _ui.update {
+            it.copy(
+                mode = Mode.IDLE,
+                samples = windowOf(takeSamples, takeMs),
+                clockMs = takeMs,
+                currentMidi = null,
+                currentNote = "",
+                cents = 0,
+                elapsedMs = takeMs,
+                takeMs = takeMs,
+                hasTake = hasTake,
+                playMs = playMs,
+            )
+        }
+    }
+
+    fun toggleListening() {
+        if (capture != null) stopListening() else startListening()
+    }
+
+    private fun handleFrame(buffer: FloatArray, count: Int) {
+        writer?.let { w -> runCatching { w.write(buffer, count) } }
+        val active = analyzer ?: return
+        active.process(buffer, count) { result ->
+            val now = SystemClock.uptimeMillis()
+            // 分析窗口有半个窗长的固有延迟，往回调一半让轨迹贴着真实发声时刻
+            val sampleTime = now - active.windowMs / 2
+            val sample = tracker.track(result, sampleTime) ?: return@process
+            frames.trySend(sample)
+        }
+    }
+
+    // ---------------------------------------------------------------- 回放
+
+    fun togglePlayback() {
+        if (capture != null) return
+        if (playback.isPlaying) {
+            playback.stop()
+            return
+        }
+        if (!hasTake) return
+        val data: WavData = WavReader.read(store.wavFile) ?: return
+        playMs = 0
+        _ui.update {
+            it.copy(
+                mode = Mode.PLAYBACK,
+                playMs = 0,
+                clockMs = 0,
+                samples = windowOf(takeSamples, 0),
+                currentMidi = null,
+                currentNote = "",
+            )
+        }
+        playback.play(
+            data = data,
+            onProgress = { position -> emitPlayback(position) },
+            onFinished = {
+                viewModelScope.launch(Dispatchers.Main) {
+                    // stop() 之后可能紧接着 startListening()，此时不能把 LIVE 状态覆盖回 IDLE
+                    if (_ui.value.mode != Mode.PLAYBACK) return@launch
+                    playMs = takeMs
+                    _ui.update {
+                        it.copy(
+                            mode = Mode.IDLE,
+                            playMs = takeMs,
+                            clockMs = takeMs,
+                            samples = windowOf(takeSamples, takeMs),
+                        )
+                    }
+                }
+            },
+        )
+    }
+
+    private fun emitPlayback(position: Long) {
+        if (_ui.value.mode != Mode.PLAYBACK) return
+        val clamped = position.coerceIn(0, max(takeMs, 0))
+        playMs = clamped
+        _ui.update {
+            it.copy(
+                mode = Mode.PLAYBACK,
+                playMs = clamped,
+                clockMs = clamped,
+                samples = windowOf(takeSamples, clamped),
+            )
+        }
+    }
+
+    // ---------------------------------------------------------------- 设置与清理
+
+    fun setA4(value: Float) {
+        val v = value.coerceIn(415f, 466f)
+        tracker.a4 = v
+        _ui.update { it.copy(a4 = v) }
+    }
+
+    fun setRange(range: PitchRange) {
+        val active = capture
+        if (active != null) {
+            analyzer = PitchAnalyzer(
+                active.sampleRate,
+                range.minFrequency(_ui.value.a4),
+                range.maxFrequency(_ui.value.a4),
+            )
+            tracker.reset()
+        }
+        _ui.update { it.copy(range = range) }
+    }
+
+    fun clearTake() {
+        if (capture != null) return
+        playback.stop()
+        store.clear()
+        synchronized(lock) { live.clear() }
+        takeSamples = emptyList()
+        takeMs = 0
+        hasTake = false
+        playMs = 0
+        _ui.update {
+            it.copy(
+                mode = Mode.IDLE,
+                samples = emptyList(),
+                clockMs = 0,
+                elapsedMs = 0,
+                takeMs = 0,
+                hasTake = false,
+                playMs = 0,
+                currentMidi = null,
+                currentNote = "",
+            )
+        }
+    }
+
+    fun consumeError() {
+        _ui.update { it.copy(error = null) }
+    }
+
+    fun reportError(message: String) {
+        _ui.update { it.copy(error = message) }
+    }
+
+    private fun restoreLastTake() {
+        if (!store.hasTake()) return
+        val samples = store.loadTrack()
+        if (samples.isEmpty()) return
+        takeSamples = samples
+        takeMs = samples.last().timeMs
+        hasTake = true
+        playMs = takeMs
+        _ui.update {
+            it.copy(
+                samples = windowOf(samples, takeMs),
+                clockMs = takeMs,
+                takeMs = takeMs,
+                hasTake = true,
+                playMs = takeMs,
+                elapsedMs = takeMs,
+            )
+        }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        capture?.stop()
+        capture = null
+        playback.stop()
+        writer?.let { runCatching { it.close() } }
+        writer = null
+        frames.close()
+        collector?.cancel()
+    }
+
+    // ---------------------------------------------------------------- 内部工具
+
+    private fun startCollector() {
+        collector = viewModelScope.launch(Dispatchers.Default) {
+            for (sample in frames) {
+                synchronized(lock) {
+                    live.add(sample)
+                    lastSampleTime = sample.timeMs
+                }
+                val now = SystemClock.uptimeMillis()
+                if (now - lastEmit >= 33L) {
+                    lastEmit = now
+                    emitLive()
+                }
+            }
+        }
+    }
+
+    private fun emitLive() {
+        val snapshot: List<PitchSample>
+        val clock: Long
+        val elapsed: Long
+        synchronized(lock) {
+            clock = if (lastSampleTime == 0L) startTime else lastSampleTime
+            snapshot = windowOf(live, clock)
+            elapsed = max(0L, clock - startTime)
+        }
+        if (capture == null) return
+        val current = snapshot.lastOrNull()
+        _ui.update {
+            it.copy(
+                mode = Mode.LIVE,
+                samples = snapshot,
+                clockMs = clock,
+                currentMidi = current?.midi,
+                currentNote = current?.let { s -> Music.noteName(s.midi) } ?: "",
+                cents = current?.let { s -> Music.centsOff(s.frequency, it.a4) } ?: 0,
+                elapsedMs = elapsed,
+            )
+        }
+    }
+
+    /** 取 [clock] 之前一段时间窗内的样本，用二分定位，避免每次全表扫描。 */
+    private fun windowOf(source: List<PitchSample>, clock: Long, span: Long = 4500L): List<PitchSample> {
+        if (source.isEmpty()) return emptyList()
+        val end = firstIndexAfter(source, clock + 60L)
+        if (end <= 0) return emptyList()
+        val begin = firstIndexAfter(source, clock - span - 120L)
+        if (begin >= end) return emptyList()
+        return source.subList(begin, end).toList()
+    }
+
+    private fun firstIndexAfter(source: List<PitchSample>, time: Long): Int {
+        var low = 0
+        var high = source.size
+        while (low < high) {
+            val mid = (low + high) ushr 1
+            if (source[mid].timeMs <= time) low = mid + 1 else high = mid
+        }
+        return low
+    }
+}
