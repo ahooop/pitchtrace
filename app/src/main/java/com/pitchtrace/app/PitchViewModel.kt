@@ -18,6 +18,8 @@ import com.pitchtrace.app.core.practice.Exercise
 import com.pitchtrace.app.core.practice.ExerciseSynth
 import com.pitchtrace.app.core.practice.GuidedSweep
 import com.pitchtrace.app.core.practice.Note
+import com.pitchtrace.app.core.practice.PracticeHistoryStore
+import com.pitchtrace.app.core.practice.PracticeRecord
 import com.pitchtrace.app.core.practice.PracticeResult
 import com.pitchtrace.app.core.practice.PracticeScorer
 import com.pitchtrace.app.core.practice.RangeExercise
@@ -65,6 +67,8 @@ data class UiState(
     val practiceVerdict: Verdict? = null,
     val practiceCents: Float = 0f,
     val practiceResult: PracticeResult? = null,
+    val practicePrevious: PracticeRecord? = null,
+    val practiceHistory: List<PracticeRecord> = emptyList(),
     // ---- 音域测试 ----
     val rangeLowMidi: Float = Float.NaN,
     val rangeHighMidi: Float = Float.NaN,
@@ -85,6 +89,7 @@ data class UiState(
 class PitchViewModel(application: Application) : AndroidViewModel(application) {
 
     private val store = SessionStore(application)
+    private val historyStore = PracticeHistoryStore(application)
 
     private val _ui = MutableStateFlow(UiState())
     val ui: StateFlow<UiState> = _ui.asStateFlow()
@@ -132,7 +137,13 @@ class PitchViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         restoreLastTake()
+        refreshHistory()
         startCollector()
+    }
+
+    private fun refreshHistory() {
+        val records = historyStore.load()
+        _ui.update { it.copy(practiceHistory = records) }
     }
 
     // ---------------------------------------------------------------- 采集
@@ -290,6 +301,21 @@ class PitchViewModel(application: Application) : AndroidViewModel(application) {
         val relative = snapshot.map { it.copy(timeMs = max(0L, it.timeMs - startTime)) }
         val result = PracticeScorer.score(exercise, relative)
 
+        // 没检测到人声的那次不算成绩，免得历史被一片 0% 刷掉
+        var previous: PracticeRecord? = null
+        if (result.detectedVoice) {
+            previous = historyStore.lastFor(exercise.id)
+            historyStore.append(
+                PracticeRecord(
+                    exerciseId = exercise.id,
+                    exerciseTitle = exercise.title,
+                    timestamp = System.currentTimeMillis(),
+                    hitRate = result.hitRate,
+                    avgAbsCents = result.avgAbsCents,
+                ),
+            )
+        }
+
         _ui.update {
             it.copy(
                 mode = Mode.IDLE,
@@ -301,6 +327,8 @@ class PitchViewModel(application: Application) : AndroidViewModel(application) {
                 elapsedMs = exercise.durationMs,
                 practiceVerdict = null,
                 practiceResult = result,
+                practicePrevious = previous,
+                practiceHistory = historyStore.load(),
             )
         }
     }

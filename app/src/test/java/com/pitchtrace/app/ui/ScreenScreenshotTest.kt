@@ -14,6 +14,7 @@ import com.pitchtrace.app.core.pitch.PitchRange
 import com.pitchtrace.app.core.pitch.PitchSample
 import com.pitchtrace.app.core.practice.ExerciseLibrary
 import com.pitchtrace.app.core.practice.NoteResult
+import com.pitchtrace.app.core.practice.PracticeRecord
 import com.pitchtrace.app.core.practice.PracticeResult
 import com.pitchtrace.app.core.practice.RangeResult
 import com.pitchtrace.app.core.practice.RangeSource
@@ -205,6 +206,13 @@ class ScreenScreenshotTest {
                 practiceNotes = exercise.notes,
                 practiceDurationMs = exercise.durationMs,
                 practiceResult = result,
+                practicePrevious = PracticeRecord(
+                    exerciseId = exercise.id,
+                    exerciseTitle = exercise.title,
+                    timestamp = 1_760_000_000_000L,
+                    hitRate = 0.55f,
+                    avgAbsCents = 34f,
+                ),
             ),
         )
     }

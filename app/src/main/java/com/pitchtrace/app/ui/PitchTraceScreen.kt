@@ -57,6 +57,7 @@ import com.pitchtrace.app.core.pitch.Music
 import com.pitchtrace.app.core.pitch.PitchRange
 import com.pitchtrace.app.core.practice.Exercise
 import com.pitchtrace.app.core.practice.ExerciseLibrary
+import com.pitchtrace.app.core.practice.PracticeRecord
 import com.pitchtrace.app.core.practice.PracticeResult
 import com.pitchtrace.app.core.practice.RangeResult
 import com.pitchtrace.app.core.practice.RangeSource
@@ -64,6 +65,8 @@ import com.pitchtrace.app.core.practice.Verdict
 import com.pitchtrace.app.ui.theme.Ink
 import com.pitchtrace.app.ui.theme.LocalMotionEnabled
 import com.pitchtrace.app.ui.theme.MonoNumbers
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -89,6 +92,7 @@ fun PitchTraceScreen(
     var settingsOpen by remember { mutableStateOf(false) }
     var practiceOpen by rememberSaveable { mutableStateOf(false) }
     var rangeOpen by rememberSaveable { mutableStateOf(false) }
+    var historyOpen by remember { mutableStateOf(false) }
     val sheetState = rememberModalBottomSheetState()
     val practicing = state.mode == Mode.PRACTICE
     val ranging = state.mode == Mode.RANGE
@@ -193,6 +197,8 @@ fun PitchTraceScreen(
                 if (practiceOpen && !practicing && state.practiceResult == null) {
                     PracticePicker(
                         onStart = onPracticeStart,
+                        historyCount = state.practiceHistory.size,
+                        onShowHistory = { historyOpen = true },
                         modifier = Modifier
                             .align(Alignment.Center)
                             .padding(horizontal = 24.dp),
@@ -202,10 +208,12 @@ fun PitchTraceScreen(
                 state.practiceResult?.let { result ->
                     PracticeResultCard(
                         result = result,
+                        previous = state.practicePrevious,
                         onDismiss = onPracticeDismiss,
                         onRetry = {
                             state.practiceId?.let { ExerciseLibrary.byId(it) }?.let(onPracticeStart)
                         },
+                        onShowHistory = { historyOpen = true },
                         modifier = Modifier
                             .align(Alignment.BottomCenter)
                             .padding(horizontal = 12.dp, vertical = 10.dp),
@@ -301,6 +309,16 @@ fun PitchTraceScreen(
                     onA4Change = onA4Change,
                     onRangeChange = onRangeChange,
                 )
+            }
+        }
+
+        if (historyOpen) {
+            ModalBottomSheet(
+                onDismissRequest = { historyOpen = false },
+                containerColor = Ink.Surface,
+                contentColor = Ink.Text,
+            ) {
+                HistorySheet(records = state.practiceHistory)
             }
         }
     }
@@ -913,6 +931,53 @@ private fun sourceLabel(source: RangeSource): String = when (source) {
 }
 
 @Composable
+private fun HistorySheet(records: List<PracticeRecord>) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 22.dp)
+            .padding(bottom = 28.dp),
+    ) {
+        Text("练习历史", color = Ink.Text, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(2.dp))
+        Text("只保留最近 20 次", color = Ink.TextDim, fontSize = 11.sp)
+        Spacer(Modifier.height(12.dp))
+
+        if (records.isEmpty()) {
+            Text("还没有练习记录", color = Ink.TextDim, fontSize = 12.sp)
+            return@Column
+        }
+
+        records.forEach { record ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(record.exerciseTitle, color = Ink.Text, fontSize = 12.sp)
+                    Text(stampText(record.timestamp), color = Ink.TextDim, fontSize = 9.sp)
+                }
+                Text(
+                    text = "${(record.hitRate * 100).roundToInt()}%",
+                    color = Ink.Accent,
+                    style = MonoNumbers.copy(fontSize = 12.sp),
+                )
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    text = "${record.avgAbsCents.roundToInt()}¢",
+                    color = Ink.TextDim,
+                    style = MonoNumbers.copy(fontSize = 10.sp),
+                )
+            }
+            Spacer(Modifier.height(9.dp))
+        }
+    }
+}
+
+private fun stampText(timestamp: Long): String =
+    SimpleDateFormat("MM-dd HH:mm", Locale.US).format(Date(timestamp))
+
+@Composable
 private fun PracticeHud(
     verdict: Verdict?,
     cents: Float,
@@ -962,7 +1027,12 @@ private fun PracticeHud(
 }
 
 @Composable
-private fun PracticePicker(onStart: (Exercise) -> Unit, modifier: Modifier = Modifier) {
+private fun PracticePicker(
+    onStart: (Exercise) -> Unit,
+    historyCount: Int,
+    onShowHistory: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
     Column(
         modifier = modifier
             .clip(RoundedCornerShape(16.dp))
@@ -989,6 +1059,19 @@ private fun PracticePicker(onStart: (Exercise) -> Unit, modifier: Modifier = Mod
             )
             Spacer(Modifier.height(6.dp))
         }
+
+        if (historyCount > 0) {
+            Text(
+                text = "历史记录（$historyCount）",
+                color = Ink.TextDim,
+                fontSize = 11.sp,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(9.dp))
+                    .clickable { onShowHistory() }
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+            )
+        }
     }
 }
 
@@ -996,8 +1079,10 @@ private fun PracticePicker(onStart: (Exercise) -> Unit, modifier: Modifier = Mod
 @Composable
 private fun PracticeResultCard(
     result: PracticeResult,
+    previous: PracticeRecord?,
     onDismiss: () -> Unit,
     onRetry: () -> Unit,
+    onShowHistory: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -1022,10 +1107,28 @@ private fun PracticeResultCard(
             )
             Spacer(Modifier.weight(1f))
             Text(
+                text = "历史",
+                color = Ink.TextDim,
+                fontSize = 11.sp,
+                modifier = Modifier.clickable { onShowHistory() },
+            )
+            Spacer(Modifier.width(12.dp))
+            Text(
                 text = "关闭",
                 color = Ink.TextDim,
                 fontSize = 11.sp,
                 modifier = Modifier.clickable { onDismiss() },
+            )
+        }
+
+        if (previous != null) {
+            val delta = ((result.hitRate - previous.hitRate) * 100).roundToInt()
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = "上次 ${(previous.hitRate * 100).roundToInt()}% · " +
+                    if (delta >= 0) "↑$delta" else "↓${-delta}",
+                color = if (delta >= 0) Ink.Accent else Ink.Danger,
+                fontSize = 10.sp,
             )
         }
 
