@@ -75,6 +75,7 @@ class MainActivity : ComponentActivity() {
                 DisposableEffect(lifecycleOwner) {
                     val observer = LifecycleEventObserver { _, event ->
                         if (event == Lifecycle.Event.ON_STOP) {
+                            viewModel.finishRangeTest()
                             viewModel.stopPractice()
                             viewModel.stopListening()
                         }
@@ -86,7 +87,7 @@ class MainActivity : ComponentActivity() {
                 // 采集时保持屏幕常亮，这是调音类工具的默认预期
                 DisposableEffect(state.mode) {
                     val window = (view.context as? Activity)?.window
-                    if (state.mode == Mode.LIVE || state.mode == Mode.PRACTICE) {
+                    if (state.mode == Mode.LIVE || state.mode == Mode.PRACTICE || state.mode == Mode.RANGE) {
                         window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
                     } else {
                         window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -115,6 +116,13 @@ class MainActivity : ComponentActivity() {
                     onPracticeStart = viewModel::startPractice,
                     onPracticeStop = viewModel::stopPractice,
                     onPracticeDismiss = viewModel::clearPracticeResult,
+                    onRangeStart = viewModel::startRangeTest,
+                    onRangeFinish = viewModel::finishRangeTest,
+                    onRangeDismiss = viewModel::clearRangeResult,
+                    onApplyRange = { range ->
+                        viewModel.setRange(range)
+                        viewModel.clearRangeResult()
+                    },
                 )
             }
         }

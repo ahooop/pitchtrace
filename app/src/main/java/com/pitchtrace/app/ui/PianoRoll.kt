@@ -46,6 +46,7 @@ fun PianoRoll(
     currentCents: Int? = null,
     nowFraction: Float = 0.58f,
     referenceNotes: List<Note> = emptyList(),
+    rangeMarks: List<Float> = emptyList(),
 ) {
     val textMeasurer = rememberTextMeasurer(cacheSize = 64)
     val density = LocalDensity.current
@@ -116,6 +117,24 @@ fun PianoRoll(
             val x = xOf(second)
             if (x in left..right) drawDashedVertical(x, 0f, bottom, Ink.Grid)
             second -= 1000L
+        }
+
+        // 音域标记：测到的最高/最低音各画一条水平线
+        for (mark in rangeMarks) {
+            if (mark.isNaN()) continue
+            val y = yOf(mark).coerceIn(0f, bottom)
+            drawLine(
+                color = Ink.Accent.copy(alpha = 0.65f),
+                start = Offset(left, y),
+                end = Offset(right, y),
+                strokeWidth = 1.2f,
+            )
+            drawLine(
+                color = Ink.Accent.copy(alpha = 0.18f),
+                start = Offset(left, y),
+                end = Offset(right, y),
+                strokeWidth = 5f,
+            )
         }
 
         // 参考轨：练习模式下把目标音画成半透明灰条，人声轨迹叠在上面

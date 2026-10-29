@@ -16,9 +16,15 @@ import com.pitchtrace.app.core.pitch.PitchSample
 import com.pitchtrace.app.core.pitch.PitchTracker
 import com.pitchtrace.app.core.practice.Exercise
 import com.pitchtrace.app.core.practice.ExerciseSynth
+import com.pitchtrace.app.core.practice.GuidedSweep
 import com.pitchtrace.app.core.practice.Note
 import com.pitchtrace.app.core.practice.PracticeResult
 import com.pitchtrace.app.core.practice.PracticeScorer
+import com.pitchtrace.app.core.practice.RangeExercise
+import com.pitchtrace.app.core.practice.RangeProbe
+import com.pitchtrace.app.core.practice.RangeResult
+import com.pitchtrace.app.core.practice.RangeSource
+import com.pitchtrace.app.core.practice.RangeSweep
 import com.pitchtrace.app.core.practice.ReferenceTrack
 import com.pitchtrace.app.core.practice.Verdict
 import com.pitchtrace.app.core.store.SessionStore
@@ -33,7 +39,7 @@ import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.max
 
-enum class Mode { IDLE, LIVE, PLAYBACK, PRACTICE }
+enum class Mode { IDLE, LIVE, PLAYBACK, PRACTICE, RANGE }
 
 data class UiState(
     val mode: Mode = Mode.IDLE,
@@ -59,6 +65,12 @@ data class UiState(
     val practiceVerdict: Verdict? = null,
     val practiceCents: Float = 0f,
     val practiceResult: PracticeResult? = null,
+    // ---- 音域测试 ----
+    val rangeLowMidi: Float = Float.NaN,
+    val rangeHighMidi: Float = Float.NaN,
+    val rangeTargetNote: String = "",
+    val rangeGuided: Boolean = false,
+    val rangeResult: RangeResult? = null,
 )
 
 /**
@@ -91,6 +103,10 @@ class PitchViewModel(application: Application) : AndroidViewModel(application) {
 
     private var practiceExercise: Exercise? = null
     private var practiceTrack: ReferenceTrack? = null
+
+    private val rangeProbe = RangeProbe()
+    private var rangeSweep: RangeSweep? = null
+    private var rangeTrack: ReferenceTrack? = null
 
     private val lock = Any()
     private val live = ArrayList<PitchSample>(8192)
@@ -281,6 +297,84 @@ class PitchViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    // ---------------------------------------------------------------- 音域测试
+
+    /**
+     * @param guided true = 播放半音阶扫频，跟唱测极限；false = 自由唱，实时记录稳定极值。
+     * 自由测之后紧接着点引导测时，保留自由测的极值，最后合并成更宽的结果。
+     */
+    fun startRangeTest(guided: Boolean) {
+        if (capture != null) return
+        playback.stop()
+        synth.stop()
+        if (!guided) rangeProbe.reset()
+        rangeSweep = if (guided) RangeExercise.sweep() else null
+        rangeTrack = rangeSweep?.let { ReferenceTrack(it.exercise) }
+        _ui.update {
+            it.copy(
+                rangeResult = null,
+                rangeLowMidi = Float.NaN,
+                rangeHighMidi = Float.NaN,
+                rangeTargetNote = "",
+                rangeGuided = guided,
+            )
+        }
+        beginCapture(Mode.RANGE, recordToTake = false)
+        if (capture == null) return
+        rangeSweep?.let { synth.play(it.exercise) }
+    }
+
+    fun finishRangeTest() {
+        val active = capture ?: return
+        capture = null
+        active.stop()
+        synth.stop()
+        analyzer = null
+        writer?.let { runCatching { it.close() } }
+        writer = null
+
+        val snapshot: List<PitchSample>
+        synchronized(lock) { snapshot = live.toList() }
+        val relative = snapshot.map { it.copy(timeMs = max(0L, it.timeMs - startTime)) }
+
+        rangeProbe.finish()
+        val free = rangeProbe.snapshot()
+        val sweep = rangeSweep
+        val result = if (sweep != null) {
+            val guided = GuidedSweep.evaluate(sweep, relative)
+            RangeResult.merge(free, guided).copy(
+                source = when {
+                    free.hasRange && guided.hasRange -> RangeSource.MIXED
+                    guided.hasRange -> RangeSource.GUIDED
+                    else -> RangeSource.FREE
+                },
+            )
+        } else {
+            free
+        }
+
+        val endMs = relative.lastOrNull()?.timeMs ?: 0L
+        _ui.update {
+            it.copy(
+                mode = Mode.IDLE,
+                samples = windowOf(relative, endMs),
+                clockMs = endMs,
+                currentMidi = null,
+                currentNote = "",
+                cents = 0,
+                elapsedMs = endMs,
+                rangeResult = result,
+                rangeLowMidi = result.lowMidi,
+                rangeHighMidi = result.highMidi,
+                rangeTargetNote = "",
+            )
+        }
+    }
+
+    fun clearRangeResult() {
+        _ui.update { it.copy(rangeResult = null) }
+    }
+
     private fun handleFrame(buffer: FloatArray, count: Int) {
         writer?.let { w -> runCatching { w.write(buffer, count) } }
         val active = analyzer ?: return
@@ -447,6 +541,7 @@ class PitchViewModel(application: Application) : AndroidViewModel(application) {
                     live.add(sample)
                     lastSampleTime = sample.timeMs
                 }
+                if (_ui.value.mode == Mode.RANGE) rangeProbe.accept(sample)
                 val now = SystemClock.uptimeMillis()
                 if (now - lastEmit >= 33L) {
                     lastEmit = now
@@ -467,6 +562,11 @@ class PitchViewModel(application: Application) : AndroidViewModel(application) {
         }
         if (capture == null) return
         val current = snapshot.lastOrNull()
+
+        if (_ui.value.mode == Mode.RANGE) {
+            emitRange(snapshot, elapsed)
+            return
+        }
 
         if (_ui.value.mode == Mode.PRACTICE) {
             emitPractice(snapshot, current, elapsed)
@@ -526,6 +626,33 @@ class PitchViewModel(application: Application) : AndroidViewModel(application) {
                 elapsedMs = elapsed,
                 practiceVerdict = verdict,
                 practiceCents = if (cents.isNaN()) 0f else cents,
+            )
+        }
+    }
+
+    private fun emitRange(snapshot: List<PitchSample>, elapsed: Long) {
+        val sweep = rangeSweep
+        if (sweep != null && elapsed > sweep.exercise.durationMs + 500L) {
+            finishRangeTest()
+            return
+        }
+
+        val relative = snapshot.map { it.copy(timeMs = max(0L, it.timeMs - startTime)) }
+        val latest = snapshot.lastOrNull()
+        val target = rangeTrack?.nearestTargetMidi(elapsed)
+
+        _ui.update {
+            it.copy(
+                mode = Mode.RANGE,
+                samples = relative,
+                clockMs = elapsed,
+                elapsedMs = elapsed,
+                currentMidi = latest?.midi,
+                currentNote = latest?.let { s -> Music.noteName(s.midi) } ?: "",
+                cents = 0,
+                rangeLowMidi = rangeProbe.lowMidi,
+                rangeHighMidi = rangeProbe.highMidi,
+                rangeTargetNote = if (target != null && !target.isNaN()) Music.noteName(target) else "",
             )
         }
     }

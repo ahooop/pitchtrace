@@ -15,6 +15,8 @@ import com.pitchtrace.app.core.pitch.PitchSample
 import com.pitchtrace.app.core.practice.ExerciseLibrary
 import com.pitchtrace.app.core.practice.NoteResult
 import com.pitchtrace.app.core.practice.PracticeResult
+import com.pitchtrace.app.core.practice.RangeResult
+import com.pitchtrace.app.core.practice.RangeSource
 import com.pitchtrace.app.core.practice.Verdict
 import com.pitchtrace.app.ui.theme.LocalMotionEnabled
 import com.pitchtrace.app.ui.theme.PitchTraceTheme
@@ -74,6 +76,10 @@ class ScreenScreenshotTest {
                             onPracticeStart = {},
                             onPracticeStop = {},
                             onPracticeDismiss = {},
+                            onRangeStart = {},
+                            onRangeFinish = {},
+                            onRangeDismiss = {},
+                            onApplyRange = {},
                         )
                     }
                 }
@@ -199,6 +205,52 @@ class ScreenScreenshotTest {
                 practiceNotes = exercise.notes,
                 practiceDurationMs = exercise.durationMs,
                 practiceResult = result,
+            ),
+        )
+    }
+
+    @Test
+    fun render_range_screen() {
+        val samples = melody()
+        val clock = samples.last().timeMs
+        render(
+            name = "range",
+            state = UiState(
+                mode = Mode.RANGE,
+                samples = samples,
+                clockMs = clock,
+                currentMidi = samples.last().midi,
+                elapsedMs = clock,
+                range = PitchRange.VOICE,
+                sampleRate = 48000,
+                rangeLowMidi = 40f,
+                rangeHighMidi = 67f,
+                rangeTargetNote = "G4",
+            ),
+        )
+    }
+
+    @Test
+    fun render_range_result() {
+        val samples = melody()
+        render(
+            name = "range-result",
+            state = UiState(
+                mode = Mode.IDLE,
+                samples = samples,
+                clockMs = samples.last().timeMs,
+                elapsedMs = samples.last().timeMs,
+                range = PitchRange.VOICE,
+                sampleRate = 48000,
+                rangeLowMidi = 41f,
+                rangeHighMidi = 67f,
+                rangeResult = RangeResult(
+                    lowMidi = 41f,
+                    highMidi = 67f,
+                    lowStableMs = 820L,
+                    highStableMs = 640L,
+                    source = RangeSource.MIXED,
+                ),
             ),
         )
     }

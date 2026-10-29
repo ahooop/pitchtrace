@@ -58,6 +58,8 @@ import com.pitchtrace.app.core.pitch.PitchRange
 import com.pitchtrace.app.core.practice.Exercise
 import com.pitchtrace.app.core.practice.ExerciseLibrary
 import com.pitchtrace.app.core.practice.PracticeResult
+import com.pitchtrace.app.core.practice.RangeResult
+import com.pitchtrace.app.core.practice.RangeSource
 import com.pitchtrace.app.core.practice.Verdict
 import com.pitchtrace.app.ui.theme.Ink
 import com.pitchtrace.app.ui.theme.LocalMotionEnabled
@@ -79,11 +81,17 @@ fun PitchTraceScreen(
     onPracticeStart: (Exercise) -> Unit,
     onPracticeStop: () -> Unit,
     onPracticeDismiss: () -> Unit,
+    onRangeStart: (Boolean) -> Unit,
+    onRangeFinish: () -> Unit,
+    onRangeDismiss: () -> Unit,
+    onApplyRange: (PitchRange) -> Unit,
 ) {
     var settingsOpen by remember { mutableStateOf(false) }
     var practiceOpen by rememberSaveable { mutableStateOf(false) }
+    var rangeOpen by rememberSaveable { mutableStateOf(false) }
     val sheetState = rememberModalBottomSheetState()
     val practicing = state.mode == Mode.PRACTICE
+    val ranging = state.mode == Mode.RANGE
 
     Box(
         modifier = Modifier
@@ -103,12 +111,22 @@ fun PitchTraceScreen(
             )
 
             ModeSwitch(
-                practice = practiceOpen,
+                practice = practiceOpen || practicing,
+                range = rangeOpen || ranging,
                 onFree = {
                     if (practicing) onPracticeStop()
+                    if (ranging) onRangeFinish()
                     practiceOpen = false
+                    rangeOpen = false
                 },
-                onPractice = { practiceOpen = true },
+                onPractice = {
+                    practiceOpen = true
+                    rangeOpen = false
+                },
+                onRange = {
+                    practiceOpen = false
+                    rangeOpen = true
+                },
             )
 
             Box(
@@ -124,6 +142,11 @@ fun PitchTraceScreen(
                     currentMidi = state.currentMidi,
                     currentCents = if (state.mode == Mode.LIVE) state.cents else null,
                     referenceNotes = if (practiceOpen || state.mode == Mode.PRACTICE) state.practiceNotes else emptyList(),
+                    rangeMarks = if (rangeOpen || state.mode == Mode.RANGE) {
+                        listOf(state.rangeLowMidi, state.rangeHighMidi)
+                    } else {
+                        emptyList()
+                    },
                     modifier = Modifier.fillMaxSize(),
                 )
 
@@ -131,7 +154,9 @@ fun PitchTraceScreen(
                     Text(
                         text = when {
                             state.mode == Mode.LIVE -> "正在聆听…"
+                            state.mode == Mode.RANGE -> "唱到你能到的最低和最高音"
                             practiceOpen -> "选择一项练习，戴上耳机"
+                            rangeOpen -> "先自由唱，或跟着半音阶测极限"
                             else -> "按下麦克风，唱一个音"
                         },
                         color = Ink.TextDim,
@@ -187,6 +212,42 @@ fun PitchTraceScreen(
                     )
                 }
 
+                if (rangeOpen && !ranging && state.rangeResult == null) {
+                    RangePanel(
+                        lowMidi = state.rangeLowMidi,
+                        highMidi = state.rangeHighMidi,
+                        onFree = { onRangeStart(false) },
+                        onGuided = { onRangeStart(true) },
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .padding(horizontal = 22.dp),
+                    )
+                }
+
+                if (ranging) {
+                    RangeHud(
+                        lowMidi = state.rangeLowMidi,
+                        highMidi = state.rangeHighMidi,
+                        elapsedMs = state.elapsedMs,
+                        targetNote = state.rangeTargetNote,
+                        onFinish = onRangeFinish,
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(top = 10.dp, end = 56.dp),
+                    )
+                }
+
+                state.rangeResult?.let { result ->
+                    RangeResultCard(
+                        result = result,
+                        onDismiss = onRangeDismiss,
+                        onApply = onApplyRange,
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                    )
+                }
+
                 if (state.error != null) {
                     ErrorBanner(
                         message = state.error,
@@ -204,9 +265,15 @@ fun PitchTraceScreen(
             )
 
             BottomBar(
-                listening = state.mode == Mode.LIVE || practicing,
+                listening = state.mode == Mode.LIVE || practicing || ranging,
                 canClear = state.hasTake && state.mode == Mode.IDLE,
-                onMicClick = { if (practicing) onPracticeStop() else onMicClick() },
+                onMicClick = {
+                    when {
+                        ranging -> onRangeFinish()
+                        practicing -> onPracticeStop()
+                        else -> onMicClick()
+                    }
+                },
                 onClearClick = onClearClick,
                 onSettingsClick = { settingsOpen = true },
             )
@@ -550,8 +617,10 @@ private fun SettingsSheet(
 @Composable
 private fun ModeSwitch(
     practice: Boolean,
+    range: Boolean,
     onFree: () -> Unit,
     onPractice: () -> Unit,
+    onRange: () -> Unit,
 ) {
     Row(
         modifier = Modifier
@@ -560,9 +629,11 @@ private fun ModeSwitch(
             .padding(bottom = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        ModeTab(label = "自由聆听", selected = !practice, onClick = onFree)
+        ModeTab(label = "自由聆听", selected = !practice && !range, onClick = onFree)
         Spacer(Modifier.width(6.dp))
         ModeTab(label = "练习", selected = practice, onClick = onPractice)
+        Spacer(Modifier.width(6.dp))
+        ModeTab(label = "音域", selected = range, onClick = onRange)
     }
 }
 
@@ -579,6 +650,230 @@ private fun ModeTab(label: String, selected: Boolean, onClick: () -> Unit) {
             .clickable { onClick() }
             .padding(horizontal = 10.dp, vertical = 5.dp),
     )
+}
+
+@Composable
+private fun RangePanel(
+    lowMidi: Float,
+    highMidi: Float,
+    onFree: () -> Unit,
+    onGuided: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(16.dp))
+            .background(Ink.Surface.copy(alpha = 0.96f))
+            .padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text("音域测试", color = Ink.Text, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(3.dp))
+        Text("稳定保持 0.3 秒以上才算数", color = Ink.TextDim, fontSize = 10.sp)
+        Spacer(Modifier.height(12.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            RangeReadout(title = "最低", midi = lowMidi)
+            Spacer(Modifier.width(20.dp))
+            RangeReadout(title = "最高", midi = highMidi)
+        }
+        Spacer(Modifier.height(14.dp))
+        Row {
+            RangeButton(text = "自由测", onClick = onFree)
+            Spacer(Modifier.width(8.dp))
+            RangeButton(text = "引导测", onClick = onGuided)
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(
+            text = "引导测会逐半音播放参考音，跟着唱到极限",
+            color = Ink.TextDim.copy(alpha = 0.7f),
+            fontSize = 9.sp,
+        )
+    }
+}
+
+@Composable
+private fun RangeReadout(title: String, midi: Float) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(title, color = Ink.TextDim, fontSize = 9.sp)
+        Text(
+            text = if (midi.isNaN()) "—" else Music.noteName(midi),
+            color = if (midi.isNaN()) Ink.TextDim else Ink.Accent,
+            fontSize = 22.sp,
+            fontWeight = FontWeight.SemiBold,
+            style = MonoNumbers,
+        )
+    }
+}
+
+@Composable
+private fun RangeButton(text: String, onClick: () -> Unit) {
+    Text(
+        text = text,
+        color = Ink.Text,
+        fontSize = 12.sp,
+        modifier = Modifier
+            .clip(RoundedCornerShape(9.dp))
+            .background(Ink.SurfaceHigh)
+            .clickable { onClick() }
+            .padding(horizontal = 16.dp, vertical = 9.dp),
+    )
+}
+
+@Composable
+private fun RangeHud(
+    lowMidi: Float,
+    highMidi: Float,
+    elapsedMs: Long,
+    targetNote: String,
+    onFinish: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(10.dp))
+            .background(Ink.Surface.copy(alpha = 0.92f))
+            .padding(horizontal = 10.dp, vertical = 7.dp),
+        horizontalAlignment = Alignment.End,
+    ) {
+        Text(
+            text = "低 ${if (lowMidi.isNaN()) "—" else Music.noteName(lowMidi)} · " +
+                "高 ${if (highMidi.isNaN()) "—" else Music.noteName(highMidi)}",
+            color = Ink.Accent,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold,
+        )
+        if (targetNote.isNotEmpty()) {
+            Spacer(Modifier.height(2.dp))
+            Text("跟唱 $targetNote", color = Ink.TextDim, fontSize = 10.sp)
+        }
+        Spacer(Modifier.height(4.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = Music.formatTime(elapsedMs),
+                color = Ink.TextDim.copy(alpha = 0.8f),
+                style = MonoNumbers.copy(fontSize = 9.sp),
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                text = "结束",
+                color = Ink.Trace,
+                fontSize = 10.sp,
+                modifier = Modifier.clickable { onFinish() },
+            )
+        }
+    }
+}
+
+@Composable
+private fun RangeResultCard(
+    result: RangeResult,
+    onDismiss: () -> Unit,
+    onApply: (PitchRange) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(Ink.Surface.copy(alpha = 0.97f))
+            .padding(14.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("你的音域", color = Ink.Text, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.weight(1f))
+            Text(
+                text = "关闭",
+                color = Ink.TextDim,
+                fontSize = 11.sp,
+                modifier = Modifier.clickable { onDismiss() },
+            )
+        }
+
+        if (!result.hasRange) {
+            Spacer(Modifier.height(6.dp))
+            Text("没有检测到稳定的音，再试一次", color = Ink.Danger, fontSize = 11.sp)
+            return@Column
+        }
+
+        Spacer(Modifier.height(10.dp))
+        Row(verticalAlignment = Alignment.Bottom) {
+            Column {
+                Text(
+                    text = result.lowNote,
+                    color = Ink.Accent,
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    text = freqText(result.lowMidi),
+                    color = Ink.TextDim,
+                    style = MonoNumbers.copy(fontSize = 9.sp),
+                )
+            }
+            Text(" — ", color = Ink.TextDim, fontSize = 14.sp)
+            Column {
+                Text(
+                    text = result.highNote,
+                    color = Ink.Accent,
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    text = freqText(result.highMidi),
+                    color = Ink.TextDim,
+                    style = MonoNumbers.copy(fontSize = 9.sp),
+                )
+            }
+            Spacer(Modifier.weight(1f))
+            Column(horizontalAlignment = Alignment.End) {
+                Text(
+                    text = "${result.spanSemitones.roundToInt()} 个半音",
+                    color = Ink.Text,
+                    fontSize = 12.sp,
+                )
+                Text(sourceLabel(result.source), color = Ink.TextDim, fontSize = 9.sp)
+            }
+        }
+
+        if (result.lowLimitedByMic) {
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = "最低音可能受手机麦克风限制，实际音域可能更低",
+                color = Ink.Danger,
+                fontSize = 10.sp,
+            )
+        }
+
+        Spacer(Modifier.height(10.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = "推荐档位：${result.recommendedRange().label}",
+                color = Ink.TextDim,
+                fontSize = 11.sp,
+            )
+            Spacer(Modifier.weight(1f))
+            Text(
+                text = "用这个档位显示",
+                color = Ink.Trace,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(Ink.Trace.copy(alpha = 0.12f))
+                    .clickable { onApply(result.recommendedRange()) }
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+            )
+        }
+    }
+}
+
+private fun freqText(midi: Float): String =
+    if (midi.isNaN()) "—" else String.format(Locale.US, "%.1f Hz", Music.midiToFrequency(midi))
+
+private fun sourceLabel(source: RangeSource): String = when (source) {
+    RangeSource.FREE -> "自由测"
+    RangeSource.GUIDED -> "引导测"
+    RangeSource.MIXED -> "自由 + 引导"
 }
 
 @Composable
