@@ -26,6 +26,7 @@ import androidx.compose.ui.unit.sp
 import com.pitchtrace.app.core.pitch.Music
 import com.pitchtrace.app.core.pitch.PitchRange
 import com.pitchtrace.app.core.pitch.PitchSample
+import com.pitchtrace.app.core.practice.Note
 import com.pitchtrace.app.ui.theme.Ink
 
 /**
@@ -44,6 +45,7 @@ fun PianoRoll(
     modifier: Modifier = Modifier,
     currentCents: Int? = null,
     nowFraction: Float = 0.58f,
+    referenceNotes: List<Note> = emptyList(),
 ) {
     val textMeasurer = rememberTextMeasurer(cacheSize = 64)
     val density = LocalDensity.current
@@ -114,6 +116,31 @@ fun PianoRoll(
             val x = xOf(second)
             if (x in left..right) drawDashedVertical(x, 0f, bottom, Ink.Grid)
             second -= 1000L
+        }
+
+        // 参考轨：练习模式下把目标音画成半透明灰条，人声轨迹叠在上面
+        for (note in referenceNotes) {
+            val x0 = xOf(note.startMs)
+            val x1 = xOf(note.endMs)
+            if (x1 < left || x0 > right) continue
+            val from = x0.coerceAtLeast(left)
+            val to = x1.coerceAtMost(right)
+            if (to <= from) continue
+            val barTop = yOf(note.midi) - semitone * 0.34f
+            val barHeight = semitone * 0.68f
+            drawRoundRect(
+                color = Ink.TextDim.copy(alpha = 0.16f),
+                topLeft = Offset(from, barTop),
+                size = Size(to - from, barHeight),
+                cornerRadius = CornerRadius(3.dp.toPx()),
+            )
+            drawRoundRect(
+                color = Ink.TextDim.copy(alpha = 0.45f),
+                topLeft = Offset(from, barTop),
+                size = Size(to - from, barHeight),
+                cornerRadius = CornerRadius(3.dp.toPx()),
+                style = Stroke(width = 1f),
+            )
         }
 
         // 轨迹：时间间隔过大就断开，噪声段自然成缺口

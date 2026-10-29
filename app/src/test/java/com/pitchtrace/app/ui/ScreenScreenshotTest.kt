@@ -12,6 +12,10 @@ import com.pitchtrace.app.UiState
 import com.pitchtrace.app.core.pitch.Music
 import com.pitchtrace.app.core.pitch.PitchRange
 import com.pitchtrace.app.core.pitch.PitchSample
+import com.pitchtrace.app.core.practice.ExerciseLibrary
+import com.pitchtrace.app.core.practice.NoteResult
+import com.pitchtrace.app.core.practice.PracticeResult
+import com.pitchtrace.app.core.practice.Verdict
 import com.pitchtrace.app.ui.theme.LocalMotionEnabled
 import com.pitchtrace.app.ui.theme.PitchTraceTheme
 import org.junit.Test
@@ -67,6 +71,9 @@ class ScreenScreenshotTest {
                             onA4Change = {},
                             onRangeChange = {},
                             onDismissError = {},
+                            onPracticeStart = {},
+                            onPracticeStop = {},
+                            onPracticeDismiss = {},
                         )
                     }
                 }
@@ -124,6 +131,74 @@ class ScreenScreenshotTest {
                 takeMs = clock,
                 range = PitchRange.VOICE,
                 sampleRate = 48000,
+            ),
+        )
+    }
+
+    @Test
+    fun render_practice_screen() {
+        val samples = melody()
+        val clock = samples.last().timeMs
+        val exercise = ExerciseLibrary.scale
+        render(
+            name = "practice",
+            state = UiState(
+                mode = Mode.PRACTICE,
+                samples = samples,
+                clockMs = clock,
+                currentMidi = samples.last().midi,
+                currentNote = "A4",
+                elapsedMs = clock,
+                range = PitchRange.VOICE,
+                sampleRate = 48000,
+                practiceId = exercise.id,
+                practiceTitle = exercise.title,
+                practiceNotes = exercise.notes,
+                practiceDurationMs = exercise.durationMs,
+                practiceVerdict = Verdict.HIT,
+                practiceCents = 12f,
+            ),
+        )
+    }
+
+    @Test
+    fun render_practice_result() {
+        val exercise = ExerciseLibrary.scale
+        val samples = melody()
+        val clock = samples.last().timeMs
+        val result = PracticeResult(
+            exerciseId = exercise.id,
+            offsetMs = 0L,
+            detectedVoice = true,
+            noteResults = exercise.notes.mapIndexed { index, note ->
+                NoteResult(
+                    note = note,
+                    sungMidi = note.midi + 0.2f,
+                    centsOff = 20f,
+                    verdict = when {
+                        index % 5 == 0 -> Verdict.MISS
+                        index % 3 == 0 -> Verdict.CLOSE
+                        else -> Verdict.HIT
+                    },
+                )
+            },
+            hitRate = 0.67f,
+            avgAbsCents = 28f,
+        )
+        render(
+            name = "practice-result",
+            state = UiState(
+                mode = Mode.IDLE,
+                samples = samples,
+                clockMs = clock,
+                elapsedMs = clock,
+                range = PitchRange.VOICE,
+                sampleRate = 48000,
+                practiceId = exercise.id,
+                practiceTitle = exercise.title,
+                practiceNotes = exercise.notes,
+                practiceDurationMs = exercise.durationMs,
+                practiceResult = result,
             ),
         )
     }

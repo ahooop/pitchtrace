@@ -38,6 +38,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -54,10 +55,16 @@ import com.pitchtrace.app.R
 import com.pitchtrace.app.UiState
 import com.pitchtrace.app.core.pitch.Music
 import com.pitchtrace.app.core.pitch.PitchRange
+import com.pitchtrace.app.core.practice.Exercise
+import com.pitchtrace.app.core.practice.ExerciseLibrary
+import com.pitchtrace.app.core.practice.PracticeResult
+import com.pitchtrace.app.core.practice.Verdict
 import com.pitchtrace.app.ui.theme.Ink
 import com.pitchtrace.app.ui.theme.LocalMotionEnabled
 import com.pitchtrace.app.ui.theme.MonoNumbers
 import java.util.Locale
+import kotlin.math.abs
+import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -69,9 +76,14 @@ fun PitchTraceScreen(
     onA4Change: (Float) -> Unit,
     onRangeChange: (PitchRange) -> Unit,
     onDismissError: () -> Unit,
+    onPracticeStart: (Exercise) -> Unit,
+    onPracticeStop: () -> Unit,
+    onPracticeDismiss: () -> Unit,
 ) {
     var settingsOpen by remember { mutableStateOf(false) }
+    var practiceOpen by rememberSaveable { mutableStateOf(false) }
     val sheetState = rememberModalBottomSheetState()
+    val practicing = state.mode == Mode.PRACTICE
 
     Box(
         modifier = Modifier
@@ -90,6 +102,15 @@ fun PitchTraceScreen(
                 onSettingsClick = { settingsOpen = true },
             )
 
+            ModeSwitch(
+                practice = practiceOpen,
+                onFree = {
+                    if (practicing) onPracticeStop()
+                    practiceOpen = false
+                },
+                onPractice = { practiceOpen = true },
+            )
+
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -102,12 +123,17 @@ fun PitchTraceScreen(
                     windowMs = state.windowMs,
                     currentMidi = state.currentMidi,
                     currentCents = if (state.mode == Mode.LIVE) state.cents else null,
+                    referenceNotes = if (practiceOpen || state.mode == Mode.PRACTICE) state.practiceNotes else emptyList(),
                     modifier = Modifier.fillMaxSize(),
                 )
 
-                if (state.samples.isEmpty()) {
+                if (state.samples.isEmpty() && state.practiceResult == null) {
                     Text(
-                        text = if (state.mode == Mode.LIVE) "正在聆听…" else "按下麦克风，唱一个音",
+                        text = when {
+                            state.mode == Mode.LIVE -> "正在聆听…"
+                            practiceOpen -> "选择一项练习，戴上耳机"
+                            else -> "按下麦克风，唱一个音"
+                        },
                         color = Ink.TextDim,
                         fontSize = 12.sp,
                         modifier = Modifier
@@ -124,6 +150,40 @@ fun PitchTraceScreen(
                         modifier = Modifier
                             .align(Alignment.TopStart)
                             .padding(top = 10.dp, start = 56.dp),
+                    )
+                }
+
+                if (practicing) {
+                    PracticeHud(
+                        verdict = state.practiceVerdict,
+                        cents = state.practiceCents,
+                        elapsedMs = state.elapsedMs,
+                        durationMs = state.practiceDurationMs,
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(top = 10.dp, end = 56.dp),
+                    )
+                }
+
+                if (practiceOpen && !practicing && state.practiceResult == null) {
+                    PracticePicker(
+                        onStart = onPracticeStart,
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .padding(horizontal = 24.dp),
+                    )
+                }
+
+                state.practiceResult?.let { result ->
+                    PracticeResultCard(
+                        result = result,
+                        onDismiss = onPracticeDismiss,
+                        onRetry = {
+                            state.practiceId?.let { ExerciseLibrary.byId(it) }?.let(onPracticeStart)
+                        },
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
                     )
                 }
 
@@ -144,9 +204,9 @@ fun PitchTraceScreen(
             )
 
             BottomBar(
-                listening = state.mode == Mode.LIVE,
+                listening = state.mode == Mode.LIVE || practicing,
                 canClear = state.hasTake && state.mode == Mode.IDLE,
-                onMicClick = onMicClick,
+                onMicClick = { if (practicing) onPracticeStop() else onMicClick() },
                 onClearClick = onClearClick,
                 onSettingsClick = { settingsOpen = true },
             )
@@ -485,4 +545,205 @@ private fun SettingsSheet(
             lineHeight = 16.sp,
         )
     }
+}
+
+@Composable
+private fun ModeSwitch(
+    practice: Boolean,
+    onFree: () -> Unit,
+    onPractice: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp)
+            .padding(bottom = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        ModeTab(label = "自由聆听", selected = !practice, onClick = onFree)
+        Spacer(Modifier.width(6.dp))
+        ModeTab(label = "练习", selected = practice, onClick = onPractice)
+    }
+}
+
+@Composable
+private fun ModeTab(label: String, selected: Boolean, onClick: () -> Unit) {
+    Text(
+        text = label,
+        color = if (selected) Ink.Text else Ink.TextDim,
+        fontSize = 11.sp,
+        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+        modifier = Modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(if (selected) Ink.SurfaceHigh else Color.Transparent)
+            .clickable { onClick() }
+            .padding(horizontal = 10.dp, vertical = 5.dp),
+    )
+}
+
+@Composable
+private fun PracticeHud(
+    verdict: Verdict?,
+    cents: Float,
+    elapsedMs: Long,
+    durationMs: Long,
+    modifier: Modifier = Modifier,
+) {
+    val tint = verdictColor(verdict)
+    val label = when (verdict) {
+        Verdict.HIT -> "准"
+        Verdict.CLOSE -> "微偏"
+        Verdict.MISS -> "跑调"
+        else -> "跟唱"
+    }
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(10.dp))
+            .background(Ink.Surface.copy(alpha = 0.92f))
+            .padding(horizontal = 10.dp, vertical = 7.dp),
+        horizontalAlignment = Alignment.End,
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier
+                    .size(7.dp)
+                    .clip(CircleShape)
+                    .background(tint),
+            )
+            Spacer(Modifier.width(5.dp))
+            Text(label, color = tint, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            if (verdict != null) {
+                Spacer(Modifier.width(4.dp))
+                Text(
+                    text = String.format(Locale.US, "%+.0f¢", cents),
+                    color = Ink.TextDim,
+                    style = MonoNumbers.copy(fontSize = 11.sp),
+                )
+            }
+        }
+        Spacer(Modifier.height(4.dp))
+        Text(
+            text = "${Music.formatTime(elapsedMs)} / ${Music.formatTime(durationMs)}",
+            color = Ink.TextDim.copy(alpha = 0.8f),
+            style = MonoNumbers.copy(fontSize = 9.sp),
+        )
+    }
+}
+
+@Composable
+private fun PracticePicker(onStart: (Exercise) -> Unit, modifier: Modifier = Modifier) {
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(16.dp))
+            .background(Ink.Surface.copy(alpha = 0.96f))
+            .padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text("练习模式", color = Ink.Text, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(3.dp))
+        Text("参考音走耳机，麦克风只收你的声音", color = Ink.TextDim, fontSize = 10.sp)
+        Spacer(Modifier.height(12.dp))
+        ExerciseLibrary.all.forEach { exercise ->
+            Text(
+                text = "${exercise.title} · ${Music.noteName(exercise.notes.first().midi)}–" +
+                    Music.noteName(exercise.notes.maxOf { it.midi }),
+                color = Ink.Text,
+                fontSize = 12.sp,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(9.dp))
+                    .background(Ink.SurfaceHigh)
+                    .clickable { onStart(exercise) }
+                    .padding(horizontal = 12.dp, vertical = 9.dp),
+            )
+            Spacer(Modifier.height(6.dp))
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun PracticeResultCard(
+    result: PracticeResult,
+    onDismiss: () -> Unit,
+    onRetry: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(Ink.Surface.copy(alpha = 0.97f))
+            .padding(14.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = "准确率 ${(result.hitRate * 100).roundToInt()}%",
+                color = Ink.Text,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Spacer(Modifier.width(10.dp))
+            Text(
+                text = "平均偏差 ${result.avgAbsCents.roundToInt()}¢",
+                color = Ink.TextDim,
+                fontSize = 11.sp,
+            )
+            Spacer(Modifier.weight(1f))
+            Text(
+                text = "关闭",
+                color = Ink.TextDim,
+                fontSize = 11.sp,
+                modifier = Modifier.clickable { onDismiss() },
+            )
+        }
+
+        if (!result.detectedVoice) {
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = "没有检测到人声，检查耳机和麦克风后再试一次",
+                color = Ink.Danger,
+                fontSize = 11.sp,
+            )
+        }
+
+        Spacer(Modifier.height(10.dp))
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            result.noteResults.forEach { note ->
+                val tint = verdictColor(note.verdict)
+                Text(
+                    text = Music.noteName(note.note.midi),
+                    color = tint,
+                    fontSize = 10.sp,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(tint.copy(alpha = 0.14f))
+                        .padding(horizontal = 6.dp, vertical = 2.dp),
+                )
+            }
+        }
+
+        Spacer(Modifier.height(10.dp))
+        Text(
+            text = "再练一次",
+            color = Ink.Trace,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier
+                .clip(RoundedCornerShape(8.dp))
+                .background(Ink.Trace.copy(alpha = 0.12f))
+                .clickable { onRetry() }
+                .padding(horizontal = 12.dp, vertical = 7.dp),
+        )
+    }
+}
+
+private fun verdictColor(verdict: Verdict?): Color = when (verdict) {
+    Verdict.HIT -> Ink.Accent
+    Verdict.CLOSE -> Ink.Trace
+    Verdict.MISS -> Ink.Danger
+    else -> Ink.TextDim
 }

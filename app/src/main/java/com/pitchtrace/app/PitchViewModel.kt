@@ -14,6 +14,13 @@ import com.pitchtrace.app.core.pitch.Music
 import com.pitchtrace.app.core.pitch.PitchRange
 import com.pitchtrace.app.core.pitch.PitchSample
 import com.pitchtrace.app.core.pitch.PitchTracker
+import com.pitchtrace.app.core.practice.Exercise
+import com.pitchtrace.app.core.practice.ExerciseSynth
+import com.pitchtrace.app.core.practice.Note
+import com.pitchtrace.app.core.practice.PracticeResult
+import com.pitchtrace.app.core.practice.PracticeScorer
+import com.pitchtrace.app.core.practice.ReferenceTrack
+import com.pitchtrace.app.core.practice.Verdict
 import com.pitchtrace.app.core.store.SessionStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -23,9 +30,10 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlin.math.abs
 import kotlin.math.max
 
-enum class Mode { IDLE, LIVE, PLAYBACK }
+enum class Mode { IDLE, LIVE, PLAYBACK, PRACTICE }
 
 data class UiState(
     val mode: Mode = Mode.IDLE,
@@ -43,6 +51,14 @@ data class UiState(
     val sampleRate: Int = 0,
     val windowMs: Long = 4500L,
     val error: String? = null,
+    // ---- 练习模式 ----
+    val practiceId: String? = null,
+    val practiceTitle: String = "",
+    val practiceNotes: List<Note> = emptyList(),
+    val practiceDurationMs: Long = 0L,
+    val practiceVerdict: Verdict? = null,
+    val practiceCents: Float = 0f,
+    val practiceResult: PracticeResult? = null,
 )
 
 /**
@@ -71,6 +87,10 @@ class PitchViewModel(application: Application) : AndroidViewModel(application) {
     private var tracker = PitchTracker()
 
     private val playback = PlaybackEngine()
+    private val synth = ExerciseSynth()
+
+    private var practiceExercise: Exercise? = null
+    private var practiceTrack: ReferenceTrack? = null
 
     private val lock = Any()
     private val live = ArrayList<PitchSample>(8192)
@@ -94,6 +114,10 @@ class PitchViewModel(application: Application) : AndroidViewModel(application) {
     // ---------------------------------------------------------------- 采集
 
     fun startListening() {
+        beginCapture(Mode.LIVE, recordToTake = true)
+    }
+
+    private fun beginCapture(mode: Mode, recordToTake: Boolean) {
         if (capture != null) return
         playback.stop()
         playMs = 0
@@ -124,7 +148,11 @@ class PitchViewModel(application: Application) : AndroidViewModel(application) {
             lastSampleTime = 0L
         }
         startTime = SystemClock.uptimeMillis()
-        writer = runCatching { WavWriter(store.wavFile, rate) }.getOrNull()
+        writer = if (recordToTake) {
+            runCatching { WavWriter(store.wavFile, rate) }.getOrNull()
+        } else {
+            null
+        }
         takeSamples = emptyList()
         takeMs = 0
         hasTake = false
@@ -132,7 +160,7 @@ class PitchViewModel(application: Application) : AndroidViewModel(application) {
 
         _ui.update {
             it.copy(
-                mode = Mode.LIVE,
+                mode = mode,
                 samples = emptyList(),
                 clockMs = 0,
                 currentMidi = null,
@@ -193,6 +221,64 @@ class PitchViewModel(application: Application) : AndroidViewModel(application) {
 
     fun toggleListening() {
         if (capture != null) stopListening() else startListening()
+    }
+
+    // ---------------------------------------------------------------- 练习
+
+    fun startPractice(exercise: Exercise) {
+        if (capture != null) return
+        synth.stop()
+        practiceExercise = exercise
+        practiceTrack = ReferenceTrack(exercise)
+        _ui.update {
+            it.copy(
+                practiceId = exercise.id,
+                practiceTitle = exercise.title,
+                practiceNotes = exercise.notes,
+                practiceDurationMs = exercise.durationMs,
+                practiceVerdict = null,
+                practiceCents = 0f,
+                practiceResult = null,
+            )
+        }
+        beginCapture(Mode.PRACTICE, recordToTake = false)
+        if (capture == null) return
+        synth.play(exercise)
+    }
+
+    fun stopPractice() {
+        val active = capture ?: return
+        capture = null
+        active.stop()
+        synth.stop()
+        analyzer = null
+        writer?.let { runCatching { it.close() } }
+        writer = null
+
+        val exercise = practiceExercise
+        if (exercise == null) {
+            _ui.update { it.copy(mode = Mode.IDLE, practiceVerdict = null) }
+            return
+        }
+
+        val snapshot: List<PitchSample>
+        synchronized(lock) { snapshot = live.toList() }
+        val relative = snapshot.map { it.copy(timeMs = max(0L, it.timeMs - startTime)) }
+        val result = PracticeScorer.score(exercise, relative)
+
+        _ui.update {
+            it.copy(
+                mode = Mode.IDLE,
+                samples = windowOf(relative, exercise.durationMs),
+                clockMs = exercise.durationMs,
+                currentMidi = null,
+                currentNote = "",
+                cents = 0,
+                elapsedMs = exercise.durationMs,
+                practiceVerdict = null,
+                practiceResult = result,
+            )
+        }
     }
 
     private fun handleFrame(buffer: FloatArray, count: Int) {
@@ -312,6 +398,10 @@ class PitchViewModel(application: Application) : AndroidViewModel(application) {
         _ui.update { it.copy(error = null) }
     }
 
+    fun clearPracticeResult() {
+        _ui.update { it.copy(practiceResult = null, practiceVerdict = null) }
+    }
+
     fun reportError(message: String) {
         _ui.update { it.copy(error = message) }
     }
@@ -341,6 +431,7 @@ class PitchViewModel(application: Application) : AndroidViewModel(application) {
         capture?.stop()
         capture = null
         playback.stop()
+        synth.stop()
         writer?.let { runCatching { it.close() } }
         writer = null
         frames.close()
@@ -376,6 +467,12 @@ class PitchViewModel(application: Application) : AndroidViewModel(application) {
         }
         if (capture == null) return
         val current = snapshot.lastOrNull()
+
+        if (_ui.value.mode == Mode.PRACTICE) {
+            emitPractice(snapshot, current, elapsed)
+            return
+        }
+
         _ui.update {
             it.copy(
                 mode = Mode.LIVE,
@@ -385,6 +482,50 @@ class PitchViewModel(application: Application) : AndroidViewModel(application) {
                 currentNote = current?.let { s -> Music.noteName(s.midi) } ?: "",
                 cents = current?.let { s -> Music.centsOff(s.frequency, it.a4) } ?: 0,
                 elapsedMs = elapsed,
+            )
+        }
+    }
+
+    /**
+     * 练习模式的实时反馈：只在 ±200ms 时间窗里找目标音，
+     * 不做帧对帧比较，所以播放/采集延迟不会把判定带偏。
+     */
+    private fun emitPractice(
+        snapshot: List<PitchSample>,
+        current: PitchSample?,
+        elapsed: Long,
+    ) {
+        val exercise = practiceExercise ?: return
+        if (elapsed > exercise.durationMs + 800L) {
+            stopPractice()
+            return
+        }
+
+        val target = practiceTrack?.nearestTargetMidi(elapsed)
+        val cents = if (current != null && target != null && !target.isNaN()) {
+            100f * (current.midi - target)
+        } else {
+            Float.NaN
+        }
+        val verdict = when {
+            cents.isNaN() -> null
+            abs(cents) <= PracticeScorer.MAX_CENTS_HIT -> Verdict.HIT
+            abs(cents) <= PracticeScorer.MAX_CENTS_CLOSE -> Verdict.CLOSE
+            else -> Verdict.MISS
+        }
+        val relative = snapshot.map { it.copy(timeMs = max(0L, it.timeMs - startTime)) }
+
+        _ui.update {
+            it.copy(
+                mode = Mode.PRACTICE,
+                samples = relative,
+                clockMs = elapsed,
+                currentMidi = current?.midi,
+                currentNote = current?.let { s -> Music.noteName(s.midi) } ?: "",
+                cents = if (cents.isNaN()) 0 else cents.toInt(),
+                elapsedMs = elapsed,
+                practiceVerdict = verdict,
+                practiceCents = if (cents.isNaN()) 0f else cents,
             )
         }
     }
