@@ -23,7 +23,7 @@
 - **Recording** — WAV plus a binary pitch track (`take.pitch`: timestamp, pitch, confidence); playback restores the trace on the same time axis, no re-analysis
 - **Testing** — `core/dsp` and `core/pitch` carry no Android dependencies, so the pitch logic is unit-tested on the JVM; UI regressions are caught by Robolectric screenshot tests that render the real Compose screen in CI
 
-Install the signed APK from [Releases](https://github.com/ahooop/pitchtrace/releases) (Android 8.0+). Build with JDK 17 and Android SDK 35: `./gradlew assembleDebug`. MIT.
+Install the signed APK from [Releases](https://github.com/ahooop/pitchtrace/releases) (Android 8.0+). Releases are built and published by CI whenever a `v*` tag is pushed. Build with JDK 17 and Android SDK 35: `./gradlew assembleDebug`. MIT.
 
 Known limits: phone microphone response rolls off below C2, so octave errors can still slip through there (folded, but not eliminated); only the latest take is kept.
 
@@ -96,6 +96,45 @@ app/src/main/java/com/pitchtrace/app/
 采集率 48k→分析率 24k 的端到端流程。
 
 `local.properties` 里的 `sdk.dir` 指向本机 Android SDK，不要提交。
+
+### GitHub Actions 自动打包
+
+提交代码后不需要本地打包，两个工作流各管一段：
+
+| 工作流 | 触发 | 产物 |
+| --- | --- | --- |
+| [Android CI](.github/workflows/android.yml) | push 到 `main`、PR、手动 | 单元测试 + debug APK + 界面截图，在 Actions 运行的 Artifacts 里下载 |
+| [Release](.github/workflows/release.yml) | 推送 `v*` tag、手动触发 | release APK，自动创建 GitHub Release 并生成变更说明 |
+
+发版就是打 tag：
+
+```bash
+git tag v0.1.1
+git push origin v0.1.1
+```
+
+也可以在 Actions → Release → Run workflow 里手填版本号触发（不需要先建 tag）。
+
+CI 签名读仓库 Secrets（Settings → Secrets and variables → Actions），四个都要配齐：
+
+| Secret | 内容 |
+| --- | --- |
+| `RELEASE_KEYSTORE_BASE64` | keystore 文件的 base64，单行 |
+| `STORE_PASSWORD` | keystore 密码 |
+| `KEY_ALIAS` | key 别名 |
+| `KEY_PASSWORD` | key 密码 |
+
+生成 base64：
+
+```powershell
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("keystore/pitchtrace-release.jks"))
+```
+
+```bash
+base64 -w0 keystore/pitchtrace-release.jks
+```
+
+没配 `RELEASE_KEYSTORE_BASE64` 时工作流不会失败，但产物会命名成 `pitchtrace-x.y.z-unsigned.apk`，Release 说明里也会标注「未签名，无法直接安装」。
 
 ## 安装
 

@@ -16,6 +16,10 @@ val keystoreProps = Properties().apply {
 }
 val hasReleaseKey = keystorePropsFile.exists() && keystoreProps.getProperty("storeFile") != null
 
+// CI 发布 Release 时用 tag 注入版本号；本地构建没有这些环境变量，走默认值。
+val appVersionName = System.getenv("PITCHTRACE_VERSION_NAME") ?: "0.1.0"
+val appVersionCode = System.getenv("PITCHTRACE_VERSION_CODE")?.toIntOrNull() ?: 1
+
 android {
     namespace = "com.pitchtrace.app"
     compileSdk = 35
@@ -24,8 +28,8 @@ android {
         applicationId = "com.pitchtrace.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = appVersionCode
+        versionName = appVersionName
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
