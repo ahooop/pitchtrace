@@ -226,6 +226,13 @@ class ScreenScreenshotTest {
                 rangeLowMidi = 40f,
                 rangeHighMidi = 67f,
                 rangeTargetNote = "G4",
+                rangeHitFlags = List(49) { index ->
+                    when {
+                        index < 8 -> index % 4 != 0
+                        index < 10 -> false
+                        else -> null
+                    }
+                },
             ),
         )
     }

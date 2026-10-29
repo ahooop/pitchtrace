@@ -71,6 +71,8 @@ data class UiState(
     val rangeTargetNote: String = "",
     val rangeGuided: Boolean = false,
     val rangeResult: RangeResult? = null,
+    /** 扫频逐音标记：true 唱对、false 没唱对、null 还没轮到。只用于展示，不打断播放。 */
+    val rangeHitFlags: List<Boolean?> = emptyList(),
 )
 
 /**
@@ -107,6 +109,12 @@ class PitchViewModel(application: Application) : AndroidViewModel(application) {
     private val rangeProbe = RangeProbe()
     private var rangeSweep: RangeSweep? = null
     private var rangeTrack: ReferenceTrack? = null
+
+    private val liveTailMs = 250L
+    private var rangeHits: BooleanArray = BooleanArray(0)
+    private var rangeScoredUpTo = 0
+    private var rangeFlagsCache: List<Boolean?> = emptyList()
+    private var rangeFlagsScored = -1
 
     private val lock = Any()
     private val live = ArrayList<PitchSample>(8192)
@@ -310,6 +318,10 @@ class PitchViewModel(application: Application) : AndroidViewModel(application) {
         if (!guided) rangeProbe.reset()
         rangeSweep = if (guided) RangeExercise.sweep() else null
         rangeTrack = rangeSweep?.let { ReferenceTrack(it.exercise) }
+        rangeHits = BooleanArray(rangeSweep?.exercise?.notes?.size ?: 0)
+        rangeScoredUpTo = 0
+        rangeFlagsCache = emptyList()
+        rangeFlagsScored = -1
         _ui.update {
             it.copy(
                 rangeResult = null,
@@ -317,6 +329,7 @@ class PitchViewModel(application: Application) : AndroidViewModel(application) {
                 rangeHighMidi = Float.NaN,
                 rangeTargetNote = "",
                 rangeGuided = guided,
+                rangeHitFlags = emptyList(),
             )
         }
         beginCapture(Mode.RANGE, recordToTake = false)
@@ -640,6 +653,7 @@ class PitchViewModel(application: Application) : AndroidViewModel(application) {
         val relative = snapshot.map { it.copy(timeMs = max(0L, it.timeMs - startTime)) }
         val latest = snapshot.lastOrNull()
         val target = rangeTrack?.nearestTargetMidi(elapsed)
+        if (sweep != null) advanceRangeHits(sweep, relative, elapsed)
 
         _ui.update {
             it.copy(
@@ -653,8 +667,38 @@ class PitchViewModel(application: Application) : AndroidViewModel(application) {
                 rangeLowMidi = rangeProbe.lowMidi,
                 rangeHighMidi = rangeProbe.highMidi,
                 rangeTargetNote = if (target != null && !target.isNaN()) Music.noteName(target) else "",
+                rangeHitFlags = if (sweep != null) refreshRangeFlags() else emptyList(),
             )
         }
+    }
+
+    /**
+     * 每播完一个音就判定一次并推进指针，只做标记，不打断播放。
+     * 判定窗口尾部多留 [liveTailMs]，因为人跟唱总比参考音慢一点。
+     */
+    private fun advanceRangeHits(sweep: RangeSweep, relative: List<PitchSample>, elapsed: Long) {
+        val notes = sweep.exercise.notes
+        while (rangeScoredUpTo < notes.size) {
+            val note = notes[rangeScoredUpTo]
+            if (elapsed < note.endMs + liveTailMs) break
+            rangeHits[rangeScoredUpTo] = GuidedSweep.hitAt(
+                note = note,
+                samples = relative,
+                offsetMs = 0L,
+                tailMs = liveTailMs,
+            )
+            rangeScoredUpTo++
+        }
+    }
+
+    /** 标记条只在推进时重建，避免每帧生成新列表触发重组。 */
+    private fun refreshRangeFlags(): List<Boolean?> {
+        if (rangeFlagsScored == rangeScoredUpTo) return rangeFlagsCache
+        rangeFlagsScored = rangeScoredUpTo
+        rangeFlagsCache = List(rangeHits.size) { index ->
+            if (index < rangeScoredUpTo) rangeHits[index] else null
+        }
+        return rangeFlagsCache
     }
 
     /** 取 [clock] 之前一段时间窗内的样本，用二分定位，避免每次全表扫描。 */

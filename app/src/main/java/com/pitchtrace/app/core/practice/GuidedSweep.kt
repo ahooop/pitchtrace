@@ -50,7 +50,7 @@ object GuidedSweep {
 
         var offset = -MAX_OFFSET_MS
         while (offset <= MAX_OFFSET_MS) {
-            val flags = notes.map { hit(it, samples, offset) }
+            val flags = notes.map { hitAt(it, samples, offset) }
             val hits = flags.count { it }
             if (hits > bestHits) {
                 bestHits = hits
@@ -99,9 +99,21 @@ object GuidedSweep {
         return reached
     }
 
-    private fun hit(note: Note, samples: List<PitchSample>, offsetMs: Long): Boolean {
+    /**
+     * 单个音是否唱对。
+     *
+     * @param offsetMs 整体时间偏移（抵消播放/采集延迟）
+     * @param tailMs 判定窗口向后延长的时间；实时跟唱时用户总比参考音慢一点，
+     *   用这个尾窗兜住，免得「刚唱到就被判没唱」。
+     */
+    fun hitAt(
+        note: Note,
+        samples: List<PitchSample>,
+        offsetMs: Long = 0L,
+        tailMs: Long = 0L,
+    ): Boolean {
         val from = note.startMs + offsetMs
-        val to = note.endMs + offsetMs
+        val to = note.endMs + offsetMs + tailMs
         if (to <= from) return false
 
         val window = samples.filter { it.timeMs >= from && it.timeMs < to }

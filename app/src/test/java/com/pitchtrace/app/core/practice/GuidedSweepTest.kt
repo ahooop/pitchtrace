@@ -63,4 +63,25 @@ class GuidedSweepTest {
         val result = GuidedSweep.evaluate(sweep, shifted)
         assertFalse(result.hasRange)
     }
+
+    @Test
+    fun tail_window_catches_late_singer() {
+        val note = sweep.exercise.notes.first()
+        // 样本整体晚 650ms：原窗口里只剩 3 个样本，不够判定
+        val late = ArrayList<PitchSample>()
+        var time = note.startMs + 20L
+        while (time < note.endMs - 20L) {
+            late.add(
+                PitchSample(
+                    timeMs = time + 650L,
+                    midi = note.midi,
+                    frequency = Music.midiToFrequency(note.midi),
+                    confidence = 0.9f,
+                ),
+            )
+            time += 10L
+        }
+        assertFalse(GuidedSweep.hitAt(note, late, offsetMs = 0L, tailMs = 0L))
+        assertTrue(GuidedSweep.hitAt(note, late, offsetMs = 0L, tailMs = 250L))
+    }
 }

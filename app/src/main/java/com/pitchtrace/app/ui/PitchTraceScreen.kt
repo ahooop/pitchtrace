@@ -237,6 +237,15 @@ fun PitchTraceScreen(
                     )
                 }
 
+                if (ranging && state.rangeHitFlags.isNotEmpty()) {
+                    RangeHitStrip(
+                        flags = state.rangeHitFlags,
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(bottom = 16.dp),
+                    )
+                }
+
                 state.rangeResult?.let { result ->
                     RangeResultCard(
                         result = result,
@@ -862,6 +871,33 @@ private fun RangeResultCard(
                     .background(Ink.Trace.copy(alpha = 0.12f))
                     .clickable { onApply(result.recommendedRange()) }
                     .padding(horizontal = 10.dp, vertical = 6.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun RangeHitStrip(flags: List<Boolean?>, modifier: Modifier = Modifier) {
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(6.dp))
+            .background(Ink.Surface.copy(alpha = 0.88f))
+            .padding(horizontal = 6.dp, vertical = 5.dp),
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        flags.forEach { flag ->
+            val color = when (flag) {
+                true -> Ink.Accent
+                false -> Ink.Danger
+                null -> Ink.GridStrong
+            }
+            Box(
+                Modifier
+                    .width(3.dp)
+                    .height(10.dp)
+                    .clip(RoundedCornerShape(1.dp))
+                    .background(color),
             )
         }
     }
